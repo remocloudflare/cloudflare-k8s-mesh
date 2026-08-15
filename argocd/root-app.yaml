@@ -13,7 +13,7 @@ spec:
   # the Cloudflare Mesh node). Add a new argocd/<name>.yaml + push and
   # ArgoCD deploys it automatically — no `argocd app create`, no kubectl.
   source:
-    repoURL: https://github.com/itlinux/cloudflare-k8s-mesh.git
+    repoURL: https://github.com/remocloudflare/cloudflare-k8s-mesh.git
     targetRevision: main
     path: argocd
     directory:

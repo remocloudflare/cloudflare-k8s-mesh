@@ -9,7 +9,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/itlinux/cloudflare-k8s-mesh.git
+    repoURL: https://github.com/remocloudflare/cloudflare-k8s-mesh.git
     targetRevision: main
     path: manifests          # kustomize dir (mesh.yml + kustomization.yaml)
 
