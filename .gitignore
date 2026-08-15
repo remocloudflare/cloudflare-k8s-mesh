@@ -8,7 +8,8 @@ mesh-token.txt
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
-.terraform.lock.hcl
+# NOTE: .terraform.lock.hcl is intentionally COMMITTED (HashiCorp guidance) so
+# provider versions are reproducible across machines and CI.
 
 # Local editor / OS junk
 .DS_Store
