@@ -36,7 +36,13 @@ variable "mesh_node_name" {
 
 # ── HA on the connector config ────────────────────────────────────────
 variable "ha_mode" {
-  description = "High-availability mode for the Mesh node config. Single replica = false. Requires MASQUE device profile."
+  description = <<-EOT
+    High-availability mode for the Mesh node config. Requires a MASQUE device
+    profile. This flag ONLY configures the Cloudflare side — it does not change
+    the replica count. For real HA also set `replicas: 2` in
+    manifests/mesh.yml; leaving them out of sync gives you an HA-configured
+    node with a single Pod behind it.
+  EOT
   type        = bool
   default     = false
 }

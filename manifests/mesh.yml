@@ -42,6 +42,10 @@ spec:
   # HA on Mesh uses ONE token across N replicas + a PVC per Pod. Cloudflare
   # runs replicas active-passive; failover is server-side. Bump to 2 for prod
   # only after confirming the device profile is MASQUE (see README).
+  #
+  # Bumping this is NOT enough on its own: also set `ha_mode = true` in
+  # terraform.tfvars. The two are independent -- Terraform configures HA on the
+  # Cloudflare side, this line decides how many Pods actually register.
   replicas: 1
   selector:
     matchLabels:
@@ -53,6 +57,17 @@ spec:
     spec:
       # Give warp-svc time to close its QUIC session cleanly on rollout.
       terminationGracePeriodSeconds: 30
+      # Inert at replicas: 1. At replicas: 2 it is the whole point of HA --
+      # two replicas on one node survive a Pod failure but not a node failure.
+      # `required` is deliberate: a second replica staying Pending on a
+      # single-node cluster is louder, and more honest, than fake HA.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: cloudflare-mesh
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: mesh
           # Tag pinned via kustomization.yaml (below). :latest is a multi-arch

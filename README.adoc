@@ -106,7 +106,12 @@ kubectl -n cloudflare-mesh create secret generic cloudflare-mesh \
 ----
 
 Or set `create_k8s_secret = true` in `terraform.tfvars` and Terraform will
-push the Secret straight into the cluster using your current kubeconfig.
+create the namespace (PSA-labelled, so ArgoCD adopts it cleanly) and push the
+Secret into it using your current kubeconfig.
+
+NOTE: this saves a copy/paste, it does *not* keep the token off disk — the
+token comes from a Terraform data source, so it lands in `terraform.tfstate`
+on either path. Use a remote encrypted backend if that matters.
 
 === 3. Sync the manifests
 
@@ -132,8 +137,8 @@ kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli --accept-tos statu
 ----
 
 Expect `Status update: Connected`. Then from a laptop enrolled in the same
-Mesh (with the Split Tunnel config from step 3 above), hit a ClusterIP
-Service by its IP or DNS name.
+Mesh (with the Split Tunnel config from *Cloudflare account prerequisites*
+item 3), hit a ClusterIP Service by its IP or DNS name.
 
 == Repo layout
 
@@ -223,6 +228,16 @@ kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli --accept-tos statu
 * *HA (`replicas: 2`) requires the same MESH_NODE_TOKEN + one PVC per Pod
   + MASQUE device profile.* The StatefulSet already gives you one PVC per
   Pod via `volumeClaimTemplates`.
++
+HA takes *two* edits in *two* places, and neither one warns you about the
+other: `ha_mode = true` in `terraform.tfvars` (Cloudflare side) and
+`replicas: 2` in `manifests/mesh.yml` (cluster side). Setting only the first
+gives you an HA-configured node with one Pod.
++
+The StatefulSet carries a *required* `podAntiAffinity` on
+`kubernetes.io/hostname`, so replicas land on different nodes. On a
+single-node cluster the second replica stays `Pending` — that is intentional:
+two Mesh Pods on one node do not survive the node failure HA exists for.
 
 == Alternative: Mesh as a sidecar
 

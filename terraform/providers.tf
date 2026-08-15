@@ -6,8 +6,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 5.0"
     }
-    # Optional: only used if var.create_k8s_secret = true. Keeps the token
-    # off local disk by pushing it straight into the cluster.
+    # Optional: only used if var.create_k8s_secret = true. This saves the
+    # copy/paste step -- it does NOT keep the token off disk. The token comes
+    # from a data source, so it is written to terraform.tfstate either way.
+    # Protect the state file (remote backend + encryption) accordingly.
     kubernetes = {
       source  = "hashicorp/kubernetes"
       version = "~> 2.30"

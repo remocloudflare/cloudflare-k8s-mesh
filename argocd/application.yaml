@@ -33,7 +33,11 @@ spec:
         pod-security.kubernetes.io/warn: privileged
         pod-security.kubernetes.io/audit: privileged
 
-  # Never prune/manage the externally-created MESH_NODE_TOKEN Secret.
+  # The externally-created MESH_NODE_TOKEN Secret is safe from prune because it
+  # carries no ArgoCD tracking label -- prune only touches resources ArgoCD
+  # itself applied. ignoreDifferences does NOT control pruning; it only stops
+  # ArgoCD reporting OutOfSync if the Secret ever does become tracked (e.g.
+  # someone adds it to manifests/). Belt-and-braces, not the actual guard.
   ignoreDifferences:
     - group: ""
       kind: Secret
