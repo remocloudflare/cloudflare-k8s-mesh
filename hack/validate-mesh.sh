@@ -43,11 +43,20 @@ else
   bad "NO default StorageClass — the StatefulSet PVC will stay Pending"
 fi
 
-# PSA: kubeadm enforces this for real
-ENF=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null)
-if [ "$ENF" = "privileged" ]; then ok "namespace PSA enforce=privileged"
-elif [ -z "$ENF" ]; then warn "namespace $NS has no PSA enforce label (cluster default applies)"
-else bad "namespace PSA enforce=$ENF — mesh Pod will be REJECTED (needs privileged)"; fi
+# PSA. Note this is a REAL admission check on any conformant cluster including
+# kind -- PodSecurity is built into kube-apiserver (on by default since 1.25),
+# not an add-on. Verified: this exact Pod spec is rejected by an
+# enforce=restricted namespace naming NET_ADMIN/NET_RAW/hostPath, and admitted
+# by enforce=privileged.
+# Only meaningful if the namespace already exists; the deploy step labels it.
+if kubectl get ns "$NS" >/dev/null 2>&1; then
+  ENF=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null)
+  if [ "$ENF" = "privileged" ]; then ok "namespace PSA enforce=privileged"
+  elif [ -z "$ENF" ]; then warn "namespace $NS has no PSA enforce label yet (deploy step will set it)"
+  else bad "namespace PSA enforce=$ENF — mesh Pod will be REJECTED (needs privileged)"; fi
+else
+  echo "    namespace $NS does not exist yet — deploy step will create + label it"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 if [ "${1:-}" != "--probes-only" ]; then
@@ -74,6 +83,9 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 hdr "2. Pod scheduling / privileges / storage"
+ENF=$(kubectl get ns "$NS" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null)
+[ "$ENF" = "privileged" ] && ok "namespace PSA enforce=privileged (post-deploy)" \
+  || bad "namespace PSA enforce=$ENF after deploy — privileged Pod will be rejected"
 kubectl -n "$NS" wait --for=condition=PodScheduled pod/$POD --timeout=60s >/dev/null 2>&1 \
   && ok "Pod scheduled" || bad "Pod not scheduled — check PSA / admission webhooks"
 
@@ -119,8 +131,19 @@ else
   warn "readiness: not Connected yet (fine if still registering / token invalid)"
   CONNECTED=0
 fi
-kubectl -n "$NS" exec $POD -- sh -c "$L_CMD" 2>/dev/null \
-  && ok "liveness passes (daemon alive)" || bad "liveness FAILS while Pod is up — would CrashLoop"
+# Only meaningful if the container is actually up right now. With an invalid
+# token the Pod is in CrashLoopBackOff and exec races the restart, which is a
+# test artefact, not a probe failure.
+CSTATE=$(kubectl -n "$NS" get pod $POD -o jsonpath='{.status.containerStatuses[0].state}' 2>/dev/null)
+case "$CSTATE" in
+  *running*)
+    kubectl -n "$NS" exec $POD -- sh -c "$L_CMD" 2>/dev/null \
+      && ok "liveness passes (daemon alive)" \
+      || bad "liveness FAILS while container is running — would CrashLoop" ;;
+  *)
+    warn "container not running right now (state=$CSTATE) — skipping liveness exec"
+    echo "      → expected with an invalid token; re-run with a REAL token" ;;
+esac
 
 # the bug this repo fixed: does the OLD pattern false-positive?
 OUT=$(kubectl -n "$NS" exec $POD -- sh -c 'warp-cli --accept-tos status' 2>/dev/null)
@@ -137,12 +160,46 @@ if [ "$CONNECTED" = "1" ] && [ "$READY" = "true" ]; then ok "kubelet agrees: Pod
 if [ "${RESTARTS:-0}" -gt 0 ]; then
   REASON=$(kubectl -n "$NS" get pod $POD -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null)
   EXIT=$(kubectl -n "$NS" get pod $POD -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null)
-  if kubectl -n "$NS" get events 2>/dev/null | grep -q "failed liveness probe"; then
+  # Scope to THIS pod. An unscoped grep picks up the A/B probe pods from
+  # section 5 (probe-old is *designed* to fail liveness) and reports a false
+  # positive against the real node.
+  if kubectl -n "$NS" get events --field-selector involvedObject.name=$POD 2>/dev/null \
+       | grep -q "failed liveness probe"; then
     bad "restarts caused by LIVENESS probe — investigate"
   else
-    warn "restarts=$RESTARTS but no liveness kill (reason=$REASON exit=$EXIT) — likely token/entrypoint self-exit"
+    warn "restarts=$RESTARTS but no liveness kill for $POD (reason=$REASON exit=$EXIT)"
+    echo "      → with an invalid/absent token this is EXPECTED: the entrypoint"
+    echo "        retries 'warp-cli connector new' 5x then exits 1."
   fi
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+hdr "4b. PSA actually enforces (negative test)"
+# Prove the cluster really rejects this Pod shape without the privileged label,
+# so a PASS above means something. Works on any conformant cluster (kind too).
+kubectl create ns psa-probe-$$ >/dev/null 2>&1
+kubectl label ns psa-probe-$$ pod-security.kubernetes.io/enforce=restricted --overwrite >/dev/null 2>&1
+PSA_OUT=$(cat <<YAML | kubectl -n psa-probe-$$ apply -f - 2>&1
+apiVersion: v1
+kind: Pod
+metadata: {name: psa-victim}
+spec:
+  containers:
+    - name: c
+      image: $IMAGE
+      command: ["sleep","30"]
+      securityContext: {capabilities: {add: [NET_ADMIN, NET_RAW]}}
+      volumeMounts: [{name: tun, mountPath: /dev/net/tun}]
+  volumes: [{name: tun, hostPath: {path: /dev/net/tun, type: CharDevice}}]
+YAML
+)
+if echo "$PSA_OUT" | grep -q "violates PodSecurity"; then
+  ok "PSA rejects the mesh Pod shape under enforce=restricted (admission is real)"
+  echo "$PSA_OUT" | grep -oE 'must not include "[^"]+"|restricted volume type "[^"]+"' | sed 's/^/      /' | head -3
+else
+  warn "PSA did NOT reject under restricted — admission may be disabled on this cluster"
+fi
+kubectl delete ns psa-probe-$$ --wait=false >/dev/null 2>&1
 
 # ─────────────────────────────────────────────────────────────────────────────
 hdr "5. A/B: prove --accept-tos is load-bearing on a real kubelet"
