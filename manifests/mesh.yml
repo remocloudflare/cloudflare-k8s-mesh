@@ -77,13 +77,24 @@ spec:
           # Mesh does NOT expose an HTTP /ready like cloudflared. Use warp-cli
           # status. warp-svc takes a few seconds to come up before the socket
           # exists, hence the initialDelay.
+          #
+          # Match the FULL "Status update: Connected" prefix. A bare
+          # `grep -qi Connected` also matches "Disconnected" and would report
+          # the Pod Ready while the tunnel is down. Do NOT anchor with `$`
+          # either: the real output is "Status update: Connected (Network
+          # Health: healthy)". Verified against warp-cli in cloudflare/mesh.
           readinessProbe:
             exec:
-              command: ["sh", "-c", "warp-cli status | grep -qi 'Connected'"]
+              command: ["sh", "-c", "warp-cli status | grep -q 'Status update: Connected'"]
             initialDelaySeconds: 15
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 4
+          # warp-cli exits non-zero when it cannot reach the warp-svc daemon
+          # ("Unable to connect to the CloudflareWARP daemon"), so this
+          # restarts the Pod if the daemon dies. It deliberately does NOT
+          # assert Connected — transient reconnects should not force restarts;
+          # that is the readinessProbe's job.
           livenessProbe:
             exec:
               command: ["sh", "-c", "warp-cli status >/dev/null 2>&1"]
