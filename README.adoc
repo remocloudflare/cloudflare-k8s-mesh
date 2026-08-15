@@ -19,7 +19,7 @@ ingress). Where cloudflared publishes an app out, Mesh reaches an app in.
 | Privileges     | Userspace, no capabilities needed               | NET_ADMIN + NET_RAW + `/dev/net/tun` hostPath
 | Workload type  | Deployment                                      | StatefulSet (registration state must persist)
 | Client needed  | No — anyone with the URL                        | Yes — Cloudflare One Client on the requester
-| MTU            | Falls back to HTTP/2                            | Requires MASQUE (QUIC) — no fallback
+| Tunnel proto   | Falls back to HTTP/2                            | MASQUE required for HA, IPv6 + hostname routes
 | PSA            | `restricted` OK                                 | Namespace must be `privileged`
 |===
 
@@ -41,8 +41,10 @@ The Mesh Pod needs privileges cloudflared never does. Verify BEFORE you sync:
 
 The #1 reason "Mesh doesn't work" is one of these being wrong:
 
-. *Device profile of this Mesh node must be MASQUE.* WireGuard silently
-  breaks HA, IPv6 CIDR routes, and hostname routes. Set in
+. *Device profile of this Mesh node should be MASQUE* (the default protocol
+  for the Cloudflare One Client). Basic IPv4 CIDR routes do work on
+  WireGuard, but WireGuard silently breaks *high availability*, *IPv6 CIDR
+  routes*, and *hostname routes*. Set in
   Zero Trust → Settings → WARP Client → Device profiles.
 
 . *Split Tunnels on the Mesh node's device profile* must ROUTE THROUGH
@@ -151,14 +153,41 @@ terraform/
   Mesh TUN captures outbound QUIC and can break cloudflared's own edge
   connections. Keep them in separate namespaces (which this layout does).
 
-* *`net.ipv4.ip_forward` is not set by the manifest.* The Pod has
-  `NET_ADMIN` and `warp-svc` manages forwarding inside its own netns, so
-  this is intentional. If routing misbehaves on a specific CNI, check
-  `sysctl -n net.ipv4.ip_forward` on the node — it may need to be a
-  kubelet `--allowed-unsafe-sysctls` addition.
+* *`net.ipv4.ip_forward` is not set by the manifest — and usually does not
+  need to be.* Cloudflare's Docker/Compose examples set it explicitly, but
+  the official Kubernetes example (which this manifest follows) does not.
+  Inspecting the `cloudflare/mesh` image: the entrypoint applies an nftables
+  ruleset (forward accept + masquerade on `CloudflareWARP`/`eth0`) but never
+  touches `ip_forward`; the container netns already starts with
+  `net.ipv4.ip_forward=1`, so IPv4 forwarding works out of the box.
++
+IPv6 is the exception — `net.ipv6.conf.all.forwarding` starts at `0`. If you
+advertise IPv6 CIDR routes you must add it, and because it is *not* in
+Kubernetes' safe-sysctl list it needs a kubelet
+`--allowed-unsafe-sysctls=net.ipv6.conf.all.forwarding` on the node before
+`securityContext.sysctls` will be accepted (Pods otherwise schedule but fail
+to launch).
 
 * *Do not overlap the Mesh CGNAT range `100.96.0.0/12`* with any Pod or
   Service CIDR you advertise.
+
+* *Return traffic needs a path back.* The node forwards inbound traffic to
+  the advertised CIDR, but the destination must be able to reply *via the
+  node*. `SRCNAT_ENABLED=true` (the default here) solves this by rewriting
+  the `100.96.x.x` source to the Pod's own address, so replies come straight
+  back. If you set `SRCNAT_ENABLED=false`, the network must instead carry a
+  static route for `100.96.0.0/12` pointing at the Mesh node — otherwise
+  requests arrive and responses vanish.
+
+* *Mesh runs the client in Traffic and DNS mode*, which redirects the
+  container's DNS to Gateway. Do not co-locate a Mesh node with a DNS server
+  workload (CoreDNS, Pi-hole, BIND, dnsmasq) in the same network namespace —
+  including as a Pod sidecar. Reach the DNS server via a CIDR route from a
+  separate Mesh node instead.
+
+* *Mesh fights other tunnel software for the routing table.* Tailscale,
+  WireGuard, OpenVPN, GlobalProtect, Zscaler and friends all manage a virtual
+  interface and system routes. Do not run them alongside a Mesh node.
 
 * *HA (`replicas: 2`) requires the same MESH_NODE_TOKEN + one PVC per Pod
   + MASQUE device profile.* The StatefulSet already gives you one PVC per
@@ -172,6 +201,8 @@ terraform/
   case you probably want cloudflared + a public hostname, not Mesh).
 
 * DNS. Mesh reaches Services by IP or by hostname route. If you need
-  `svc.cluster.local` resolution over Mesh, add hostname routes in
-  Networking → Mesh (or via the API) and point Gateway resolver policies
-  at the cluster's kube-dns.
+  `svc.cluster.local` resolution over Mesh, add a hostname route in
+  Networking → Mesh (or via the API) and make sure it matches the cluster's
+  actual DNS suffix — the default is `cluster.local`, giving names of the
+  form `service.namespace.svc.cluster.local`. Hostname routes require the
+  MASQUE device protocol.
