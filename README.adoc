@@ -154,6 +154,10 @@ terraform/
 * *Do not sidecar mesh into an app Pod that also has cloudflared.* The
   Mesh TUN captures outbound QUIC and can break cloudflared's own edge
   connections. Keep them in separate namespaces (which this layout does).
++
+NOTE: a Mesh **+ application** sidecar (no cloudflared) *is* a supported and
+documented pattern — see below. The conflict is specifically Mesh + cloudflared
+in one network namespace.
 
 * *`net.ipv4.ip_forward` is not set by the manifest — and usually does not
   need to be.* Cloudflare's Docker/Compose examples set it explicitly, but
@@ -206,6 +210,35 @@ kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli --accept-tos statu
 * *HA (`replicas: 2`) requires the same MESH_NODE_TOKEN + one PVC per Pod
   + MASQUE device profile.* The StatefulSet already gives you one PVC per
   Pod via `volumeClaimTemplates`.
+
+== Alternative: Mesh as a sidecar
+
+This repo runs Mesh as a *standalone node* that advertises CIDR routes — the
+right shape when remote Mesh participants need to reach many in-cluster
+Services, and the reason routes live in `terraform/routes.tf`.
+
+Cloudflare also documents a **sidecar** pattern: put the `cloudflare/mesh`
+container in the *same Pod* as your application. Containers in a Pod share a
+network namespace, so the app becomes reachable over Mesh with no application
+changes and no CIDR route at all — it answers on the Pod's own Mesh IP.
+
+Use the sidecar when:
+
+* exactly one workload needs to be reachable, and
+* you would rather not advertise a Service/Pod CIDR into the mesh.
+
+Use the standalone node in this repo when:
+
+* several Services must be reachable, or
+* you want one privileged Pod instead of privileging every app Pod.
+
+Caveats for the sidecar route: every sidecar needs its **own Mesh node + token**
+(node identity is per-registration, not per-Pod), each app Pod inherits
+`NET_ADMIN`/`NET_RAW` and the `/dev/net/tun` hostPath, and the shared netns puts
+the app behind Mesh's Traffic-and-DNS mode — so never sidecar it next to a DNS
+server. Manifest example: see the "Kubernetes sidecar" section of the
+link:https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-mesh/containers/[Run
+Mesh in Docker / Kubernetes] docs.
 
 == Not in this repo
 
