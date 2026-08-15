@@ -1,0 +1,15 @@
+# Never commit tokens / creds
+*.token
+mesh-token.txt
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+
+# Local editor / OS junk
+.DS_Store
+*.swp

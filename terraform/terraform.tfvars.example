@@ -1,0 +1,36 @@
+# Copy to terraform.tfvars and fill with LITERAL values.
+# terraform.tfvars is gitignored.
+#
+# Token scopes (account-scoped, ALL required):
+#   * Cloudflare One Networks: Edit   (or Cloudflare Tunnel: Edit)
+#   * Zero Trust: Edit                (for HA config on the connector)
+
+cloudflare_api_token  = "PASTE_SCOPED_TOKEN_HERE"
+cloudflare_account_id = "PASTE_ACCOUNT_ID_HERE"
+
+# Optional owner prefix for object names in a shared account.
+# name_prefix = "remo"
+
+# The visible name of the Mesh node in the dashboard.
+# mesh_node_name = "k8s-mesh-node"
+
+# High availability — set true ONLY when running >=2 replicas AND the device
+# profile is MASQUE.
+# ha_mode = false
+
+# What CIDRs to advertise into the mesh from this cluster. Discover:
+#   kubectl cluster-info dump | grep -i service-cluster-ip-range
+# Do NOT overlap 100.96.0.0/12 (Mesh CGNAT).
+mesh_routes = {
+  services = "172.20.0.0/16"
+  # pods  = "10.244.0.0/16"   # if you have a routable CNI
+  # nodes = "10.0.0.0/16"     # only if you need to reach node internal IPs
+}
+
+# ── Optional: create the k8s Secret directly from Terraform ──────────
+# Leave false (default) if your CI/GitOps rules forbid Terraform writing to
+# the cluster. Set true only for local demos / small POCs.
+# create_k8s_secret   = false
+# k8s_namespace       = "cloudflare-mesh"
+# kube_config_path    = "~/.kube/config"
+# kube_config_context = ""

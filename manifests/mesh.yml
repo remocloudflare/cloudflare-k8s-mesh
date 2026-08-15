@@ -1,0 +1,118 @@
+# =============================================================================
+# Cloudflare Mesh node running in-cluster.
+#
+# Mesh (formerly WARP Connector) needs a real TUN interface + packet forwarding,
+# so this is a privileged, STATEFUL workload — not a Deployment. Registration
+# state on /var/lib/cloudflare-warp MUST persist across restarts or the node
+# re-registers as a fresh identity.
+#
+# Prereqs the cluster MUST satisfy (see README):
+#   * PSA on the target namespace = "privileged" (NET_ADMIN + hostPath tun)
+#   * A default RWO StorageClass  (EKS: EBS CSI; k3s: local-path; GKE: pd.csi)
+#   * /dev/net/tun present on nodes (any real Linux node — NOT GKE Autopilot)
+#
+# Prereqs on the Cloudflare account (see README):
+#   * Device profile of this Mesh node = MASQUE  (WireGuard silently breaks HA,
+#     hostname routes, and IPv6 routes)
+#   * Gateway proxy: TCP + UDP (+ ICMP for ping)
+#   * Split Tunnels: advertised CIDRs must ROUTE THROUGH Cloudflare on the node
+#     device profile and on the client device profile
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-mesh
+  labels:
+    app: cloudflare-mesh
+spec:
+  # Headless — no ClusterIP. The Mesh node isn't consumed by other Pods via a
+  # Service; it just needs stable Pod DNS for the StatefulSet.
+  clusterIP: None
+  selector:
+    app: cloudflare-mesh
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cloudflare-mesh
+  labels:
+    app: cloudflare-mesh
+spec:
+  serviceName: cloudflare-mesh
+  # HA on Mesh uses ONE token across N replicas + a PVC per Pod. Cloudflare
+  # runs replicas active-passive; failover is server-side. Bump to 2 for prod
+  # only after confirming the device profile is MASQUE (see README).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflare-mesh
+  template:
+    metadata:
+      labels:
+        app: cloudflare-mesh
+    spec:
+      # Give warp-svc time to close its QUIC session cleanly on rollout.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mesh
+          # Tag pinned via kustomization.yaml (below). :latest is a multi-arch
+          # manifest amd64/arm64.
+          image: cloudflare/mesh:latest
+          env:
+            - name: MESH_NODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-mesh
+                  key: MESH_NODE_TOKEN
+            # Source-NAT the CGNAT 100.96/12 source to the Pod's local IP on
+            # egress from the tun. Default true; leave enabled unless the
+            # subnet already has return routes to 100.96.0.0/12.
+            - name: SRCNAT_ENABLED
+              value: "true"
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN   # create/manage the TUN + routing + nftables
+                - NET_RAW     # raw sockets (ICMP)
+          # Mesh does NOT expose an HTTP /ready like cloudflared. Use warp-cli
+          # status. warp-svc takes a few seconds to come up before the socket
+          # exists, hence the initialDelay.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "warp-cli status | grep -qi 'Connected'"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "warp-cli status >/dev/null 2>&1"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: warp-data
+              mountPath: /var/lib/cloudflare-warp
+            - name: dev-net-tun
+              mountPath: /dev/net/tun
+      volumes:
+        - name: dev-net-tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+  volumeClaimTemplates:
+    - metadata:
+        name: warp-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

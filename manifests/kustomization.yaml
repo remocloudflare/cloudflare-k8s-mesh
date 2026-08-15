@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# All cluster resources ArgoCD should sync for the Mesh node.
+# The MESH_NODE_TOKEN Secret is intentionally NOT here — it is created
+# out-of-band (kubectl create secret ... from the Terraform-emitted token or
+# the dashboard). ArgoCD ignoreDifferences on the Secret keeps sync happy.
+resources:
+  - mesh.yml
+
+# Pin the mesh image for reproducible syncs. Bump this tag deliberately
+# rather than drifting on :latest. Docker Hub also publishes arch-specific
+# tags (latest-amd64 / latest-arm64) and version tags like 2026.7.0.
+images:
+  - name: cloudflare/mesh
+    newTag: "2026.7.0"

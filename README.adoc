@@ -1,0 +1,177 @@
+= Cloudflare Mesh on Kubernetes
+
+Run a Cloudflare Mesh node (formerly WARP Connector) inside a Kubernetes
+cluster so that other Mesh participants — laptops, servers, other clusters —
+can reach in-cluster Services and Pods on their private IPs, over Cloudflare.
+
+This is the *bidirectional / network-to-network* companion to the
+`cloudflare-k8s` repo (which runs `cloudflared` for public-hostname
+ingress). Where cloudflared publishes an app out, Mesh reaches an app in.
+
+== How it differs from cloudflared
+
+[cols="1,1,1", options="header"]
+|===
+| | cloudflared | Cloudflare Mesh
+
+| Purpose        | Publish an app on a public hostname             | East-west private reach into the cluster
+| Direction      | Outbound only, single-direction                 | Bidirectional
+| Privileges     | Userspace, no capabilities needed               | NET_ADMIN + NET_RAW + `/dev/net/tun` hostPath
+| Workload type  | Deployment                                      | StatefulSet (registration state must persist)
+| Client needed  | No — anyone with the URL                        | Yes — Cloudflare One Client on the requester
+| MTU            | Falls back to HTTP/2                            | Requires MASQUE (QUIC) — no fallback
+| PSA            | `restricted` OK                                 | Namespace must be `privileged`
+|===
+
+== Cluster prerequisites
+
+The Mesh Pod needs privileges cloudflared never does. Verify BEFORE you sync:
+
+* Kubelet allows `hostPath` and `/dev/net/tun` on nodes.
+* No PSA policy is blocking `NET_ADMIN`. Argo labels the namespace
+  `pod-security.kubernetes.io/enforce=privileged` for you, but a
+  cluster-wide admission webhook (Gatekeeper, Kyverno) may override this.
+* A default RWO `StorageClass` is present (EKS: EBS CSI; k3s: local-path;
+  GKE Standard: pd.csi). The StatefulSet requests a 1Gi PVC per replica.
+* Cluster is *not* GKE Autopilot — Autopilot blocks the `/dev/net/tun`
+  hostPath. Autopilot is a hard incompatibility.
+* Node kernel has `tun` module loaded (`ls /dev/net/tun` on any node).
+
+== Cloudflare account prerequisites
+
+The #1 reason "Mesh doesn't work" is one of these being wrong:
+
+. *Device profile of this Mesh node must be MASQUE.* WireGuard silently
+  breaks HA, IPv6 CIDR routes, and hostname routes. Set in
+  Zero Trust → Settings → WARP Client → Device profiles.
+
+. *Split Tunnels on the Mesh node's device profile* must ROUTE THROUGH
+  Cloudflare for every advertised CIDR. Default WARP configs *exclude*
+  RFC1918 — you must add the Service/Pod CIDR to the include list (or
+  remove it from the exclude list).
+
+. *Same Split Tunnel change on the client device profile* — the profile
+  used by the laptop / other Mesh node trying to reach the cluster.
+
+. *Gateway proxy enabled*: TCP + UDP (+ ICMP for `ping`). Traffic Policies
+  → Traffic Settings → Proxy and Inspection.
+
+. First Mesh node in the account triggers a one-time setup wizard in the
+  dashboard (Networking → Mesh). Complete this manually before Terraform
+  creates any subsequent nodes.
+
+== Quick start
+
+=== 1. Create the Mesh node with Terraform
+
+----
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# fill in cloudflare_api_token, cloudflare_account_id, mesh_routes
+terraform init
+terraform apply
+----
+
+Terraform creates:
+
+* the Mesh node object (`cloudflare_zero_trust_tunnel_warp_connector`)
+* its HA config (`_config`)
+* one route per entry in `var.mesh_routes`
+
+Outputs include a copy-paste `kubectl create secret ...` command.
+
+=== 2. Create the token Secret
+
+Manual path (recommended, keeps Terraform out of the cluster write path):
+
+----
+kubectl create namespace cloudflare-mesh
+kubectl -n cloudflare-mesh create secret generic cloudflare-mesh \
+  --from-literal=MESH_NODE_TOKEN="$(terraform output -raw mesh_node_token)"
+----
+
+Or set `create_k8s_secret = true` in `terraform.tfvars` and Terraform will
+push the Secret straight into the cluster using your current kubeconfig.
+
+=== 3. Sync the manifests
+
+Either via ArgoCD (recommended — see `argocd/`):
+
+----
+kubectl apply -n argocd -f argocd/root-app.yaml
+----
+
+or directly:
+
+----
+kubectl apply -k manifests/
+----
+
+=== 4. Verify
+
+----
+kubectl -n cloudflare-mesh get pods
+kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli status
+----
+
+Expect `Status update: Connected`. Then from a laptop enrolled in the same
+Mesh (with the Split Tunnel config from step 3 above), hit a ClusterIP
+Service by its IP or DNS name.
+
+== Repo layout
+
+----
+manifests/
+  mesh.yml           # headless Service + StatefulSet
+  kustomization.yaml # pins cloudflare/mesh image tag
+
+argocd/
+  root-app.yaml      # app-of-apps root (recurses argocd/)
+  application.yaml   # deploys manifests/ into ns cloudflare-mesh,
+                     # labels ns for PSA "privileged"
+
+terraform/
+  providers.tf       # cloudflare v5 + kubernetes v2 (optional)
+  variables.tf
+  naming.tf
+  mesh.tf            # WARP Connector tunnel + HA config + token data source
+  routes.tf          # advertised CIDRs
+  k8s.tf             # optional in-cluster Secret
+  outputs.tf
+----
+
+== Gotchas
+
+* *SRCNAT* is enabled by default in the container. This masquerades the
+  Mesh CGNAT `100.96.x.x` source to the Pod's local IP so return traffic
+  routes without extra config. Only set `SRCNAT_ENABLED=false` if your
+  network has explicit return routes to `100.96.0.0/12`.
+
+* *Do not sidecar mesh into an app Pod that also has cloudflared.* The
+  Mesh TUN captures outbound QUIC and can break cloudflared's own edge
+  connections. Keep them in separate namespaces (which this layout does).
+
+* *`net.ipv4.ip_forward` is not set by the manifest.* The Pod has
+  `NET_ADMIN` and `warp-svc` manages forwarding inside its own netns, so
+  this is intentional. If routing misbehaves on a specific CNI, check
+  `sysctl -n net.ipv4.ip_forward` on the node — it may need to be a
+  kubelet `--allowed-unsafe-sysctls` addition.
+
+* *Do not overlap the Mesh CGNAT range `100.96.0.0/12`* with any Pod or
+  Service CIDR you advertise.
+
+* *HA (`replicas: 2`) requires the same MESH_NODE_TOKEN + one PVC per Pod
+  + MASQUE device profile.* The StatefulSet already gives you one PVC per
+  Pod via `volumeClaimTemplates`.
+
+== Not in this repo
+
+* Cloudflare Access on the Mesh IPs. Mesh traffic is already filtered by
+  Gateway network policies; layer Access on top only if you need
+  application-level auth in front of a specific in-cluster app (in which
+  case you probably want cloudflared + a public hostname, not Mesh).
+
+* DNS. Mesh reaches Services by IP or by hostname route. If you need
+  `svc.cluster.local` resolution over Mesh, add hostname routes in
+  Networking → Mesh (or via the API) and point Gateway resolver policies
+  at the cluster's kube-dns.

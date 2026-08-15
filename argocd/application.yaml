@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudflare-mesh
+  namespace: argocd          # ArgoCD's own namespace (where Applications live)
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/itlinux/cloudflare-k8s-mesh.git
+    targetRevision: main
+    path: manifests          # kustomize dir (mesh.yml + kustomization.yaml)
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cloudflare-mesh   # deploy the Mesh node into its own namespace
+
+  syncPolicy:
+    automated:
+      prune: true             # remove resources deleted from git
+      selfHeal: true          # revert manual drift back to git state
+    syncOptions:
+      - CreateNamespace=true   # auto-create the cloudflare-mesh namespace
+      - RespectIgnoreDifferences=true
+    # Label the namespace so PSA allows NET_ADMIN + hostPath /dev/net/tun.
+    # PSA "baseline"/"restricted" will BLOCK the mesh Pod otherwise — this is
+    # the #1 "why won't it start" cause in managed clusters.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/warn: privileged
+        pod-security.kubernetes.io/audit: privileged
+
+  # Never prune/manage the externally-created MESH_NODE_TOKEN Secret.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: cloudflare-mesh
+      jsonPointers:
+        - /data
