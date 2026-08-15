@@ -48,9 +48,22 @@ The #1 reason "Mesh doesn't work" is one of these being wrong:
   Zero Trust → Settings → WARP Client → Device profiles.
 
 . *Split Tunnels on the Mesh node's device profile* must ROUTE THROUGH
-  Cloudflare for every advertised CIDR. Default WARP configs *exclude*
-  RFC1918 — you must add the Service/Pod CIDR to the include list (or
-  remove it from the exclude list).
+  Cloudflare for every advertised CIDR. The two modes are inverses, and it is
+  worth being precise about which one you are in:
++
+* *Exclude mode* (the default) — everything goes through Gateway **except**
+  your list. Cloudflare's recommended default list already contains
+  `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `100.64.0.0/10`, so
+  RFC1918 traffic bypasses the tunnel out of the box. Remove the parent range
+  (and re-add the parts you *don't* want tunnelled).
+* *Include mode* — **only** your list goes through Gateway; all other traffic
+  bypasses it and is no longer filtered by your network or HTTP policies. It
+  is NOT "everything through WARP" — it is a default-deny allowlist, so every
+  advertised CIDR needs its own entry. Include mode also requires adding the
+  Zero Trust domains manually.
++
+NOTE: Split Tunnels only affects *IP* traffic. DNS is still resolved by Gateway
+in both modes unless you configure Local Domain Fallback.
 
 . *Same Split Tunnel change on the client device profile* — the profile
   used by the laptop / other Mesh node trying to reach the cluster.
