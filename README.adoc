@@ -113,7 +113,9 @@ kubectl apply -k manifests/
 
 ----
 kubectl -n cloudflare-mesh get pods
-kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli status
+# --accept-tos is REQUIRED outside a TTY, otherwise warp-cli just prints the
+# ToS notice and exits 1 (see Gotchas).
+kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli --accept-tos status
 ----
 
 Expect `Status update: Connected`. Then from a laptop enrolled in the same
@@ -167,6 +169,18 @@ Kubernetes' safe-sysctl list it needs a kubelet
 `--allowed-unsafe-sysctls=net.ipv6.conf.all.forwarding` on the node before
 `securityContext.sysctls` will be accepted (Pods otherwise schedule but fail
 to launch).
+
+* *`warp-cli` needs `--accept-tos` in every non-interactive invocation.*
+  Outside a TTY, plain `warp-cli status` prints "Please accept the WARP Terms
+  of Service..." and exits 1 without ever reporting a status — and acceptance
+  is *not* persisted, so this affects every call. The probes in
+  `manifests/mesh.yml` pass the flag for exactly this reason; omitting it
+  makes the readiness probe permanently fail and the liveness probe CrashLoop
+  an otherwise healthy Pod. Use it when debugging too:
++
+----
+kubectl -n cloudflare-mesh exec cloudflare-mesh-0 -- warp-cli --accept-tos status
+----
 
 * *Do not overlap the Mesh CGNAT range `100.96.0.0/12`* with any Pod or
   Service CIDR you advertise.
