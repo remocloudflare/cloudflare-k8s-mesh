@@ -63,6 +63,18 @@ variable "mesh_routes" {
   }
 }
 
+variable "virtual_network_id" {
+  description = <<-EOT
+    Virtual network to attach the advertised routes to. Blank ("") = the
+    account's default virtual network.
+    A WARP client only sees routes in the vnet its device profile is bound to,
+    so this MUST match the vnet your clients use or traffic silently never
+    enters the tunnel. Check with `warp-cli vnet` on a client.
+  EOT
+  type        = string
+  default     = ""
+}
+
 # ── Kubernetes side (optional) ────────────────────────────────────────
 # When true, Terraform writes the MESH_NODE_TOKEN into a Secret in-cluster,
 # so you never have to copy/paste the token by hand. When false (default),

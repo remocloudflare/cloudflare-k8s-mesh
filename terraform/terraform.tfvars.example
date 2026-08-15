@@ -27,6 +27,11 @@ mesh_routes = {
   # nodes = "10.0.0.0/16"     # only if you need to reach node internal IPs
 }
 
+# Virtual network for the routes above. Blank/unset = account default vnet.
+# MUST match the vnet your WARP clients are bound to (`warp-cli vnet`), or
+# clients will not see these routes at all.
+# virtual_network_id = ""
+
 # ── Optional: create the k8s Secret directly from Terraform ──────────
 # Leave false (default) if your CI/GitOps rules forbid Terraform writing to
 # the cluster. Set true only for local demos / small POCs.
